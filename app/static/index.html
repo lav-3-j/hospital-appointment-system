@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hospital Appointments</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #eef2f7; color: #1f2937; }
+    header { background: #1e4f7a; color: #fff; padding: 18px 30px; }
+    header h1 { margin: 0; font-size: 22px; }
+    header p { margin: 4px 0 0; opacity: 0.8; font-size: 14px; }
+    main { padding: 24px 30px; max-width: 1200px; margin: auto; }
+    .card { background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 20px; }
+    .card h2 { margin: 0 0 14px; font-size: 17px; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }
+    label { font-size: 13px; color: #555; display: flex; flex-direction: column; gap: 4px; }
+    input, select { padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+    button { padding: 8px 14px; border: none; border-radius: 6px; background: #1e4f7a; color: #fff; cursor: pointer; font-size: 14px; }
+    button:hover { background: #163b5c; }
+    button.small { padding: 4px 10px; font-size: 12px; background: #b91c1c; }
+    button.small:hover { background: #991b1b; }
+    .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #e5e7eb; }
+    th { background: #f8fafc; color: #475569; font-weight: 600; }
+    .badge { padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+    .scheduled { background: #dbeafe; color: #1e40af; }
+    .confirmed { background: #dcfce7; color: #166534; }
+    .completed { background: #e5e7eb; color: #374151; }
+    .cancelled { background: #fee2e2; color: #991b1b; }
+    #msg { font-weight: 600; margin: 12px 0 0; min-height: 20px; }
+    .ok { color: #166534; }
+    .err { color: #b91c1c; }
+    .muted { color: #64748b; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hospital Appointment System</h1>
+    <p>Live data from PostgreSQL. <a href="/docs" style="color:#fff">Open API docs</a></p>
+  </header>
+
+  <main>
+    <div class="card">
+      <h2>Book an appointment</h2>
+      <div class="form-grid">
+        <label>Doctor
+          <select id="doctor"></select>
+        </label>
+        <label>Patient
+          <select id="patient"></select>
+        </label>
+        <label>Date
+          <input type="date" id="date">
+        </label>
+        <label>Time
+          <input type="time" id="time">
+        </label>
+        <label>Reason
+          <input type="text" id="reason" placeholder="Optional">
+        </label>
+        <div>
+          <button onclick="bookAppointment()">Book</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Appointments</h2>
+      <div class="toolbar">
+        <label>Status
+          <select id="statusFilter" onchange="loadAppointments()">
+            <option value="">All</option>
+            <option value="scheduled">Scheduled</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </label>
+        <button onclick="loadAppointments()">Refresh</button>
+        <span class="muted" id="updated"></span>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Date</th><th>Time</th><th>Doctor</th>
+            <th>Patient</th><th>Status</th><th>Reason</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+
+      <p id="msg"></p>
+    </div>
+  </main>
+
+  <script>
+    const STATUSES = ["scheduled", "confirmed", "completed", "cancelled"];
+
+    // Escape text from the database before putting it into the page
+    function esc(value) {
+      const div = document.createElement("div");
+      div.textContent = value ?? "";
+      return div.innerHTML;
+    }
+
+    function showMsg(text, ok = true) {
+      const msg = document.getElementById("msg");
+      msg.textContent = text;
+      msg.className = ok ? "ok" : "err";
+    }
+
+    // FastAPI returns error text in "detail". For validation errors it's a list.
+    function errorText(data) {
+      if (typeof data.detail === "string") return data.detail;
+      if (Array.isArray(data.detail)) return data.detail.map(d => d.msg).join(", ");
+      return "Something went wrong";
+    }
+
+    // One helper for every API call: sends JSON, returns data, throws on errors
+    async function request(url, options = {}) {
+      const res = await fetch(url, {
+        headers: { "Content-Type": "application/json" },
+        ...options
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(errorText(data));
+      return data;
+    }
+
+    async function loadDropdowns() {
+      const [doctors, patients] = await Promise.all([
+        request("/doctors?size=100"),
+        request("/patients?size=100"),
+      ]);
+      document.getElementById("doctor").innerHTML =
+        doctors.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+      document.getElementById("patient").innerHTML =
+        patients.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+    }
+
+    async function bookAppointment() {
+      const body = {
+        doctor_id: Number(document.getElementById("doctor").value),
+        patient_id: Number(document.getElementById("patient").value),
+        appointment_date: document.getElementById("date").value,
+        appointment_time: document.getElementById("time").value,
+        status: "scheduled",
+        reason: document.getElementById("reason").value || null,
+      };
+
+      try {
+        await request("/appointments", { method: "POST", body: JSON.stringify(body) });
+        showMsg("Appointment booked.");
+        document.getElementById("reason").value = "";
+        loadAppointments();
+      } catch (e) {
+        showMsg(e.message, false);
+      }
+    }
+
+    async function cancelAppointment(id) {
+      if (!confirm(`Cancel appointment #${id}?`)) return;
+
+      try {
+        await request(`/appointments/${id}`, {
+          method: "PUT",
+          body: JSON.stringify({ status: "cancelled" })
+        });
+        showMsg(`Appointment #${id} cancelled.`);
+        loadAppointments();
+      } catch (e) {
+        showMsg(e.message, false);
+      }
+    }
+
+    async function loadAppointments() {
+      const status = document.getElementById("statusFilter").value;
+      const url = "/appointments?size=50" + (status ? `&status=${status}` : "");
+
+      try {
+        const data = await request(url);
+        const rows = document.getElementById("rows");
+
+        if (data.length === 0) {
+          rows.innerHTML = `<tr><td colspan="8" class="muted">No appointments found.</td></tr>`;
+        } else {
+          rows.innerHTML = data.map(a => `
+            <tr>
+              <td>${esc(a.id)}</td>
+              <td>${esc(a.appointment_date)}</td>
+              <td>${esc(a.appointment_time.slice(0, 5))}</td>
+              <td>${esc(a.doctor_name)}</td>
+              <td>${esc(a.patient_name)}</td>
+              <td><span class="badge ${STATUSES.includes(a.status) ? a.status : ""}">${esc(a.status)}</span></td>
+              <td>${esc(a.reason) || "-"}</td>
+              <td>${a.status === "cancelled" ? "" :
+                `<button class="small" onclick="cancelAppointment(${Number(a.id)})">Cancel</button>`}</td>
+            </tr>`).join("");
+        }
+
+        document.getElementById("updated").textContent =
+          `${data.length} shown, last updated ${new Date().toLocaleTimeString()}`;
+      } catch (e) {
+        showMsg(e.message, false);
+      }
+    }
+
+    // Start up: fill the dropdowns, load the table, then refresh every 15 seconds
+    loadDropdowns();
+    loadAppointments();
+    setInterval(loadAppointments, 15000);
+  </script>
+</body>
+</html>
